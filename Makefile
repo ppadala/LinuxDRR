@@ -11,6 +11,8 @@ else
 	PWD  := $(shell pwd)
 default:
 	$(MAKE) -C $(KERNELDIR) M=$(PWD) modules
+	gcc -o mount.drrq mount.c
+	gcc -o test test.c
 clean:
 	rm -f *.o *.ko
 endif
