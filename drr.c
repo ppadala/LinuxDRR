@@ -10,15 +10,33 @@ static struct drr_dev_t *drr_dev;
 
 static int drr_open(struct block_device *dev, fmode_t mode)
 {
-    printk("open called");
+    printk("open called\n");
     return 0;
 }
 
 /* Function for handling requeust queue */
 static void drr_request(struct request_queue *q)
 {
-    printk("drr_request called");
+    struct request *req;
 
+    printk("drr_request called\n");
+
+    req = blk_fetch_request(q);
+    while(req != NULL) {
+        //struct drr_dev *dev = req->rq_disk->private_data;
+
+        unsigned long start = blk_rq_pos(req) << 9;
+        unsigned long len  = blk_rq_cur_bytes(req);
+
+        printk("start = %lu len = %lu\n", start, len);
+        printk("Buffer contains = %s\n", req->buffer);
+
+        if(! __blk_end_request_cur(req, 0)) {
+            req = blk_fetch_request(q);
+        }
+    }
+
+    printk("drr_request finished\n");
 }
 
 static const struct block_device_operations drr_fops  = {
@@ -63,6 +81,7 @@ static int __init drr_init( void )
     dev->gd->queue = dev->queue;
     dev->gd->private_data = dev;
     snprintf(dev->gd->disk_name, 32, "drra");
+    set_capacity(dev->gd, 4096);
     add_disk(dev->gd);
 
     return 0;
@@ -79,10 +98,10 @@ error_register:
 
 static void __exit drr_exit( void )
 {
-    del_gendisk(drr_dev->gd);
+    put_disk(drr_dev->gd);
     blk_cleanup_queue(drr_dev->queue);
-    kfree(drr_dev);
     unregister_blkdev(drr_major, "drr");
+    kfree(drr_dev);
     printk("<1>Goodbye cruel world\n");
 }
 
