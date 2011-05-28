@@ -33,7 +33,7 @@ int main(const int argc, const char **argv)
         close(backing_fd);
         exit(-1);
     }
-	printf(" passthru device fd = %d\n", drrq_fd);
+	printf("DRRQ fd = %d\n", drrq_fd);
     
     if (ioctl(drrq_fd, DRR_SET_BACKING_DEVICE, backing_fd) < 0) {
         perror("");

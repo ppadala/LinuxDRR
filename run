@@ -1,0 +1,6 @@
+#!/bin/sh
+# Quick dirty script to go through the whole workflow
+rmmod drr
+insmod drr.ko
+./mount.drrq /dev/drra /dev/sdb
+./test

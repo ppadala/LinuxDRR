@@ -15,32 +15,47 @@ static int drr_open(struct block_device *bdev, fmode_t mode)
     return 0;
 }
 
-/* Function for handling requeust queue */
-static void drr_request(struct request_queue *q)
+/* upcall from block device to DRR driver */
+static void drr_bio_end_io(struct bio *bio, int error)
 {
-    struct request *req;
+	struct bio *drr_bio = (struct bio *)bio->bi_private;
 
-    printk("drr_request called\n");
+    printk(KERN_INFO "drr_bio_end_io: called for %lu sector\n", bio->bi_sector);
+    bio_endio(drr_bio, error); /* signal that our bio is also done */
+	bio_put(bio);
+}
 
-    req = blk_fetch_request(q);
-    while(req != NULL) {
-        struct drr_dev_t *dev = (struct drr_dev *)req->rq_disk->private_data;
+static int drr_pass_bio(struct drr_dev_t *dev, struct bio *bio)
+{
+    struct bio *backing_bio;
 
-        unsigned long start = blk_rq_pos(req) << 9;
-        unsigned long len  = blk_rq_cur_bytes(req);
-        
-        printk("start = %lu len = %lu\n", start, len);
-        printk("Buffer contains = %s\n", req->buffer);
+    backing_bio = bio_clone(bio, GFP_KERNEL);
 
-/*        if(start + len > get_capacity(dev->gd)) /* out of bounds */
-/*            __blk_end_request_cur(req, 0); /* end it right there */
+    if(backing_bio == NULL)
+        return -ENOMEM; /* TODO: handle this in top layer */
 
-        if(! __blk_end_request_cur(req, 0)) {
-            req = blk_fetch_request(q);
-        }
+    if (dev->backing_dev == NULL) {
+        printk(KERN_ERR "Got I/O request before SET_FD command\n");
+        return -ENOTTY;
+    }
+    else {
+        backing_bio->bi_bdev = dev->backing_dev;
+        backing_bio->bi_end_io = drr_bio_end_io;
+        backing_bio->bi_private = bio;
+        generic_make_request(backing_bio);
     }
 
-    printk("drr_request finished\n");
+    return 0;
+}
+
+static int drr_make_request(struct request_queue *q, struct bio *bio)
+{
+    struct drr_dev_t *dev = q->queuedata;
+    
+    printk(KERN_INFO "drr_make_request: called for %lu sector\n", bio->bi_sector);
+    drr_pass_bio(dev, bio); 
+    /* If we don't return zero here, upper layers keep re-trying, wierd */
+    return 0;
 }
 
 static int drr_set_backing_fd(struct drr_dev_t *dev, unsigned long backing_fd)
@@ -135,14 +150,18 @@ static int __init drr_init( void )
     }
 
     memset(dev, 0, sizeof(struct drr_dev_t));
-    spin_lock_init(&dev->lock);              /* this must be done before initializing req Q */
-    dev->queue = blk_init_queue(drr_request, &dev->lock);
+    spin_lock_init(&dev->lock);   /* this must be done before initializing req Q */
 
+    dev->queue = blk_alloc_queue(GFP_KERNEL);
     if(dev->queue == NULL) {
         printk(KERN_WARNING "DRR: cannot create requeust queue");
         error = -EBUSY;
         goto error_init_queue;
     }
+    dev->queue->queuedata = dev;
+
+    /* By-passing the request queue and use stacking driver approach */
+    blk_queue_make_request(dev->queue, drr_make_request);
 
     dev->gd = alloc_disk(DRR_MINORS);
     if(!dev->gd) {
@@ -156,7 +175,11 @@ static int __init drr_init( void )
     dev->gd->queue = dev->queue;
     dev->gd->private_data = dev;
     snprintf(dev->gd->disk_name, 32, "drra");
-    set_capacity(dev->gd, 4096);
+
+    /* this is important. If capacity is set to anything else,
+       make_request will be called and if we don't have a backing device
+       bad things will happen */
+    set_capacity(dev->gd, 0);
     add_disk(dev->gd);
 
     return 0;

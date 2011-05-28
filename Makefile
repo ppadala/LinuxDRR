@@ -14,5 +14,5 @@ default:
 	gcc -o mount.drrq mount.c
 	gcc -o test test.c
 clean:
-	rm -f *.o *.ko
+	rm -f *.o *.ko test mount.drrq
 endif
