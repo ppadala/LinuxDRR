@@ -8,6 +8,7 @@
 
 static int drr_major = 0;
 static struct drr_dev_t drr_dev[DRR_MINORS];
+static struct workqueue_struct *drr_workqueue = NULL;
 
 static int drr_open(struct block_device *bdev, fmode_t mode)
 {
@@ -19,10 +20,16 @@ static int drr_open(struct block_device *bdev, fmode_t mode)
 static void drr_bio_end_io(struct bio *bio, int error)
 {
 	struct bio *drr_bio = (struct bio *)bio->bi_private;
+    struct drr_dev_t *dev = (struct drr_dev_t *) drr_bio->bi_bdev->bd_disk->private_data;
 
-    printk(KERN_INFO "drr_bio_end_io: called for %lu sector\n", bio->bi_sector);
+    printk(KERN_INFO "drr_bio_end_io: called for %d sector\n", (int)bio->bi_sector);
     bio_endio(drr_bio, error); /* signal that our bio is also done */
 	bio_put(bio);
+
+    atomic_inc(&dev->credit);
+    if(atomic_read(&dev->credit) == DRR_MAX_CREDIT)
+        atomic_set(&dev->credit, DRR_MAX_CREDIT);
+    printk("dev->credit = %d\n", atomic_read(&dev->credit));
 }
 
 static int drr_pass_bio(struct drr_dev_t *dev, struct bio *bio)
@@ -39,6 +46,7 @@ static int drr_pass_bio(struct drr_dev_t *dev, struct bio *bio)
         return -ENOTTY;
     }
     else {
+        atomic_dec(&dev->credit);
         backing_bio->bi_bdev = dev->backing_dev;
         backing_bio->bi_end_io = drr_bio_end_io;
         backing_bio->bi_private = bio;
@@ -48,12 +56,84 @@ static int drr_pass_bio(struct drr_dev_t *dev, struct bio *bio)
     return 0;
 }
 
+static void printq(struct drr_dev_t *dev)
+{
+    struct drrq *entry = dev->qhead;
+
+    printk("head = %p ## ", dev->qhead);
+    while(entry != NULL) {
+        printk("%p -> ", entry);
+        entry = entry->next;
+    }
+
+    printk("NULL ##");
+    printk(" tail = %p\n", dev->qtail);
+
+}
+
+static struct bio *drr_dequeue(struct drr_dev_t *dev)
+{
+    struct drrq *temp = dev->qhead;
+    struct bio *bio = temp->bio;
+  
+    printq(dev);
+    if(dev->qhead == NULL) {
+        printk("Q is NULL, should never come here\n");
+        return NULL;
+    }
+
+    dev->qhead = dev->qhead->next;
+    if(dev->qhead == NULL) /* empty queue */
+        dev->qtail = NULL;
+
+    kfree(temp);
+    printq(dev);
+
+    return bio;
+}
+
+static int drr_enqueue(struct drr_dev_t *dev, struct bio *bio)
+{
+    struct drrq *ior = kmalloc(sizeof(struct drrq), GFP_KERNEL); /* TODO: error check */
+    
+    printq(dev);
+    ior->bio = bio;
+    ior->next = NULL;
+
+	if (dev->qtail != NULL) {
+		dev->qtail->next = ior;
+		dev->qtail = ior;
+	}
+	else {
+        printk("Enqueueing the first one \n");
+		dev->qhead = dev->qtail = ior;
+	}
+    printq(dev);
+
+    return 0;
+}
+
+static int drr_emptyq(struct drr_dev_t *dev)
+{
+    return (dev->qhead == NULL) && (dev->qtail == NULL) ? 1: 0;
+}
+
 static int drr_make_request(struct request_queue *q, struct bio *bio)
 {
     struct drr_dev_t *dev = q->queuedata;
+    printk("dev pointer = %p\n", dev);
     
-    printk(KERN_INFO "drr_make_request: called for %lu sector\n", bio->bi_sector);
-    drr_pass_bio(dev, bio); 
+    printk(KERN_INFO "drr_make_request: called for %d sector\n", (int)bio->bi_sector);
+    //bio->bi_private = dev; /* this is causing hard reset, why? */
+    printk("dev->credit = %d\n", atomic_read(&dev->credit));
+
+    drr_enqueue(dev, bio);
+    if(atomic_read(&dev->credit) > 0) { /* if there are credits, dequeue */
+        struct bio *new_bio;
+        new_bio = drr_dequeue(dev);
+        drr_pass_bio(dev, new_bio); 
+    }
+
     /* If we don't return zero here, upper layers keep re-trying, wierd */
     return 0;
 }
@@ -135,6 +215,7 @@ static struct block_device_operations drr_fops  = {
 
 static int drr_setup_vbd( struct drr_dev_t *dev, int which)
 {   
+    printk("Setting up for dev pointer = %p\n", dev);
     memset(dev, 0, sizeof(struct drr_dev_t));
 
     spin_lock_init(&dev->lock);   /* this must be done before initializing req Q */
@@ -182,6 +263,13 @@ error_init_queue:
 static int __init drr_init( void )
 {   int error = 0, i;
 
+    drr_workqueue = create_workqueue("drrq-bottomhalf");
+	if (drr_workqueue == NULL) {
+		printk(KERN_ERR "Unable to allocate workqueue\n");
+		error = -ENOMEM;
+		goto error_workqueue;
+	}
+
     drr_major = register_blkdev(drr_major, "drr");
     if(drr_major <= 0) {
         printk(KERN_WARNING "DRR: unable to get major number");
@@ -198,6 +286,8 @@ static int __init drr_init( void )
 error_init_vbd:
     unregister_blkdev(drr_major, "drr");
 error_register:
+    destroy_workqueue(drr_workqueue);
+error_workqueue:
     return error;
 }
 
@@ -211,6 +301,7 @@ static void __exit drr_exit( void )
         put_disk(dev->gd);
         blk_cleanup_queue(dev->queue);
     }
+	destroy_workqueue(drr_workqueue);
     unregister_blkdev(drr_major, "drr");
     printk("<1>Goodbye cruel world\n");
 }

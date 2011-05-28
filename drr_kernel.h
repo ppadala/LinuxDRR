@@ -11,7 +11,7 @@ struct drrq {
     struct drrq *next;
 };
 
-#define DRR_MAX_CREDIT 100 /* 100 outstanding requests allowed at once */
+#define DRR_MAX_CREDIT 2 /* number of outstanding requests allowed at once */
 
 struct drr_dev_t {
     spinlock_t lock;                /* for mutual exclusion */

@@ -4,25 +4,28 @@
 #include <string.h>
 
 int main()
-{   int fd, ret;
-    char buf[512], newbuf[512];
+{   int fd, ret, i;
+    char buf[512], newbuf[4096];
 
     fd = open("/dev/drra", O_WRONLY);
     if(fd < 0) {
         perror("");
         exit(-1);
     }
-    strcpy(buf, "hello world\n");
+/*    strcpy(buf, "hello world\n");
     ret = write(fd, buf, strlen(buf));
     printf("Wrote %d bytes\n", ret);
     if(ret != strlen(buf)) {
         perror("");
     }
     close(fd);
-
+*/
     fd = open("/dev/drra", O_RDONLY);
-    ret = read(fd, newbuf, 512);
-    newbuf[511] = '\0';
-    printf("Read %d bytes with content = %s\n", ret, newbuf);
+    for(i = 0; i < 3; ++i) {
+        ret = read(fd, newbuf, 4096);
+        newbuf[511] = '\0';
+        //printf("Read %d bytes with content = %s\n", ret, newbuf);
+        printf("Read %d bytes\n", ret);
+    }
     close(fd);
 }
