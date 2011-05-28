@@ -252,6 +252,7 @@ static int drr_ioctl(struct block_device *bdev, fmode_t mode,
         case DRR_SET_WEIGHT:
             dev->weight = arg; 
             atomic_set(&dev->credit, DRR_MAX_CREDIT * dev->weight);
+            printk("Weight for %s is set to %d", dev->gd->disk_name, atomic_read(&dev->credit));
             break;
 
         default:

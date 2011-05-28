@@ -13,6 +13,7 @@ default:
 	$(MAKE) -C $(KERNELDIR) M=$(PWD) modules
 	gcc -o mount.drrq mount.c
 	gcc -o test test.c
+	gcc -o ioparam ioparam.c
 clean:
 	rm -f *.o *.ko test mount.drrq
 endif
