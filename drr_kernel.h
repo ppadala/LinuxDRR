@@ -30,6 +30,7 @@ struct drr_dev_t {
 
     /* current credit */
     atomic_t credit;
+    int weight;
 };
 
 #endif

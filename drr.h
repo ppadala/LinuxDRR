@@ -9,5 +9,6 @@
 
 #define DRR_IOCTL_MAGIC 0xDE
 #define DRR_SET_BACKING_DEVICE _IOR(DRR_IOCTL_MAGIC, 1, int)
+#define DRR_SET_WEIGHT _IOR(DRR_IOCTL_MAGIC, 2, int)
 
 #endif

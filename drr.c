@@ -142,19 +142,24 @@ static void drr_workqueue_handler(struct work_struct *wk)
     struct drr_dev_t * dev;
     struct bio *bio;
 
+    spin_lock_irqsave(&worker_lock, flags); 
     for(i = 0; i < DRR_MINORS; ++i) {
         dev = &drr_dev[i];
         /* if there are credits, dequeue */
-        if(!drr_emptyq(dev) && atomic_read(&dev->credit) > 0) { 
+        if(atomic_read(&dev->credit) > 0) { 
+
+            if(!drr_emptyq(dev)) {
             printk("workqueue_handler: dequeuing from queue %d: \n", i);
-            spin_lock_irqsave(&worker_lock, flags); 
             bio = drr_dequeue(dev);
             drr_pass_bio(dev, bio); 
-            spin_unlock_irqrestore(&worker_lock, flags);
-            break; /* could continue, but let other worker threads 
+            /*break;  could continue, but let other worker threads 
                       pick up the work too */
+            }
         }
     }
+    spin_unlock_irqrestore(&worker_lock, flags);
+
+
 }
 
 
@@ -235,18 +240,25 @@ static int drr_ioctl(struct block_device *bdev, fmode_t mode,
 {
     struct drr_dev_t *dev = bdev->bd_disk->private_data;
     int error = 0;
+    unsigned long flags;
 
-	spin_lock(&dev->lock);
+    spin_lock_irqsave(&worker_lock, flags); 
     switch(cmd) {
         case DRR_SET_BACKING_DEVICE:
             /* arg contains the backing device's fd */
             error = drr_set_backing_fd(dev, arg);
             break;
+
+        case DRR_SET_WEIGHT:
+            dev->weight = arg; 
+            atomic_set(&dev->credit, DRR_MAX_CREDIT * dev->weight);
+            break;
+
         default:
             error = -EINVAL;
     }
 	
-    spin_unlock(&dev->lock);
+    spin_unlock_irqrestore(&worker_lock, flags);
     return error;
 }
 
@@ -273,6 +285,7 @@ static int drr_setup_vbd( struct drr_dev_t *dev, int which)
     blk_queue_make_request(dev->queue, drr_make_request);
 
     atomic_set(&dev->credit,  DRR_MAX_CREDIT);
+    dev->weight = 1; /* initially all are equal */
 
     dev->qtail = NULL;
     dev->qhead = NULL;
