@@ -12,6 +12,7 @@ struct drrq {
 };
 
 #define DRR_MAX_CREDIT 2 /* number of outstanding requests allowed at once */
+#define DRR_MAX_WORK_THREADS 256
 
 struct drr_dev_t {
     spinlock_t lock;                /* for mutual exclusion */

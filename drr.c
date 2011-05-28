@@ -8,11 +8,19 @@
 
 static int drr_major = 0;
 static struct drr_dev_t drr_dev[DRR_MINORS];
+
 static struct workqueue_struct *drr_workqueue = NULL;
+struct work_struct work[DRR_MAX_WORK_THREADS];
+int curr_workq = 0;
+/* lock to synchronize the worker threads, 
+   dev->lock is not enough, as workers run for all devs */
+static spinlock_t worker_lock; 
+
+static int drr_emptyq(struct drr_dev_t *dev);
 
 static int drr_open(struct block_device *bdev, fmode_t mode)
 {
-    printk("open called\n");
+    /* refcount? */
     return 0;
 }
 
@@ -30,6 +38,16 @@ static void drr_bio_end_io(struct bio *bio, int error)
     if(atomic_read(&dev->credit) == DRR_MAX_CREDIT)
         atomic_set(&dev->credit, DRR_MAX_CREDIT);
     printk("dev->credit = %d\n", atomic_read(&dev->credit));
+
+    /* queue work so that drr_make_request can continue if there are any requests */
+    if(!drr_emptyq(dev)) {
+        printk("launching workq %d\n", curr_workq);
+        if(queue_work(drr_workqueue, &(work[curr_workq]))) {
+            ++curr_workq;
+            if(curr_workq == DRR_MAX_WORK_THREADS)
+                curr_workq = 0;
+        }
+    }
 }
 
 static int drr_pass_bio(struct drr_dev_t *dev, struct bio *bio)
@@ -118,14 +136,38 @@ static int drr_emptyq(struct drr_dev_t *dev)
     return (dev->qhead == NULL) && (dev->qtail == NULL) ? 1: 0;
 }
 
+static void drr_workqueue_handler(struct work_struct *wk)
+{   unsigned long flags;
+    int i;
+    struct drr_dev_t * dev;
+    struct bio *bio;
+
+    for(i = 0; i < DRR_MINORS; ++i) {
+        dev = &drr_dev[i];
+        /* if there are credits, dequeue */
+        if(!drr_emptyq(dev) && atomic_read(&dev->credit) > 0) { 
+            printk("workqueue_handler: dequeuing from queue %d: \n", i);
+            spin_lock_irqsave(&worker_lock, flags); 
+            bio = drr_dequeue(dev);
+            drr_pass_bio(dev, bio); 
+            spin_unlock_irqrestore(&worker_lock, flags);
+            break; /* could continue, but let other worker threads 
+                      pick up the work too */
+        }
+    }
+}
+
+
 static int drr_make_request(struct request_queue *q, struct bio *bio)
 {
     struct drr_dev_t *dev = q->queuedata;
-    printk("dev pointer = %p\n", dev);
-    
+    unsigned long flags;
+
     printk(KERN_INFO "drr_make_request: called for %d sector\n", (int)bio->bi_sector);
-    //bio->bi_private = dev; /* this is causing hard reset, why? */
     printk("dev->credit = %d\n", atomic_read(&dev->credit));
+    
+    spin_lock_irqsave(&worker_lock, flags);
+    //bio->bi_private = dev; /* this is causing hard reset, why? */
 
     drr_enqueue(dev, bio);
     if(atomic_read(&dev->credit) > 0) { /* if there are credits, dequeue */
@@ -133,6 +175,7 @@ static int drr_make_request(struct request_queue *q, struct bio *bio)
         new_bio = drr_dequeue(dev);
         drr_pass_bio(dev, new_bio); 
     }
+    spin_unlock_irqrestore(&worker_lock, flags);
 
     /* If we don't return zero here, upper layers keep re-trying, wierd */
     return 0;
@@ -215,7 +258,6 @@ static struct block_device_operations drr_fops  = {
 
 static int drr_setup_vbd( struct drr_dev_t *dev, int which)
 {   
-    printk("Setting up for dev pointer = %p\n", dev);
     memset(dev, 0, sizeof(struct drr_dev_t));
 
     spin_lock_init(&dev->lock);   /* this must be done before initializing req Q */
@@ -263,7 +305,7 @@ error_init_queue:
 static int __init drr_init( void )
 {   int error = 0, i;
 
-    drr_workqueue = create_workqueue("drrq-bottomhalf");
+    drr_workqueue = create_singlethread_workqueue("drrq-bh");
 	if (drr_workqueue == NULL) {
 		printk(KERN_ERR "Unable to allocate workqueue\n");
 		error = -ENOMEM;
@@ -276,10 +318,16 @@ static int __init drr_init( void )
         error = -EBUSY;
         goto error_register;
     }
+    
+	spin_lock_init(&worker_lock);
 
-    for(i = 0;i < DRR_MINORS; ++i) 
+    for(i = 0;i < DRR_MAX_WORK_THREADS; ++i)
+        INIT_WORK(&(work[i]), drr_workqueue_handler);
+
+    for(i = 0;i < DRR_MINORS; ++i) {
         if(drr_setup_vbd(&drr_dev[i], i) < 0)
             goto error_init_vbd; /* TODO: fix all the partial setups to be undone */
+    }
 
     return 0;
 
@@ -301,9 +349,10 @@ static void __exit drr_exit( void )
         put_disk(dev->gd);
         blk_cleanup_queue(dev->queue);
     }
+    flush_workqueue(drr_workqueue);
 	destroy_workqueue(drr_workqueue);
     unregister_blkdev(drr_major, "drr");
-    printk("<1>Goodbye cruel world\n");
+    printk("Goodbye cruel world\n");
 }
 
 module_init( drr_init );
