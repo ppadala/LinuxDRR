@@ -1,0 +1,22 @@
+Interposing Block Driver
+------------------------
+
+This driver provides virtual block devices named /dev/drr[a-h]. These virtual
+devices need to backed up by a real device. Once backing device is set, based
+on the credit values, the scheduler provides proportional sharing.
+
+How to use
+----------
+insmod drr.ko                       # Insert the module
+./mount.drrq /dev/drra /dev/sdb     # Set the backing device for drra
+./mount.drrq /dev/drrb /dev/sdb     # Set the backing device for drrb
+./ioparam /dev/drra 4               # Set weight for drra
+./ioparam /dev/drrb 1               # Set weight for drrb
+
+Run the test program to test the reads and writes
+./test
+
+More coming soon ...
+
+--
+Questions & Comments to Pradeep Padala <ppadala@gmail.com>
