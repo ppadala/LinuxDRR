@@ -3,4 +3,5 @@
 rmmod drr
 insmod drr.ko
 ./mount.drrq /dev/drra /dev/sdb
+#./mount.drrq /dev/drrb /dev/sdb
 ./test

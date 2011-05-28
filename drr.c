@@ -7,7 +7,7 @@
 #include "drr_kernel.h"
 
 static int drr_major = 0;
-static struct drr_dev_t *drr_dev;
+static struct drr_dev_t drr_dev[DRR_MINORS];
 
 static int drr_open(struct block_device *bdev, fmode_t mode)
 {
@@ -133,29 +133,15 @@ static struct block_device_operations drr_fops  = {
     .ioctl = drr_ioctl,
 };
 
-static int __init drr_init( void )
-{   int error = 0;
-    struct drr_dev_t *dev;
-
-    drr_dev = kmalloc(sizeof(struct drr_dev_t), GFP_KERNEL);
-    dev = drr_dev;
-    if(!dev)
-        return -ENOMEM;
-    
-    drr_major = register_blkdev(drr_major, "drr");
-    if(drr_major <= 0) {
-        printk(KERN_WARNING "DRR: unable to get major number");
-        error = -EBUSY;
-        goto error_register;
-    }
-
+static int drr_setup_vbd( struct drr_dev_t *dev, int which)
+{   
     memset(dev, 0, sizeof(struct drr_dev_t));
+
     spin_lock_init(&dev->lock);   /* this must be done before initializing req Q */
 
     dev->queue = blk_alloc_queue(GFP_KERNEL);
     if(dev->queue == NULL) {
         printk(KERN_WARNING "DRR: cannot create requeust queue");
-        error = -EBUSY;
         goto error_init_queue;
     }
     dev->queue->queuedata = dev;
@@ -163,44 +149,69 @@ static int __init drr_init( void )
     /* By-passing the request queue and use stacking driver approach */
     blk_queue_make_request(dev->queue, drr_make_request);
 
-    dev->gd = alloc_disk(DRR_MINORS);
+    atomic_set(&dev->credit,  DRR_MAX_CREDIT);
+
+    dev->qtail = NULL;
+    dev->qhead = NULL;
+
+    dev->gd = alloc_disk(1);
     if(!dev->gd) {
         printk(KERN_NOTICE "alloc_disk failure\n");
-        error = -EBUSY;
         goto error_disk_alloc;
     }
     dev->gd->major = drr_major;
-    dev->gd->first_minor = 0;
+    dev->gd->first_minor = which;
     dev->gd->fops = &drr_fops;
     dev->gd->queue = dev->queue;
     dev->gd->private_data = dev;
-    snprintf(dev->gd->disk_name, 32, "drra");
+    snprintf(dev->gd->disk_name, 32, "drr%c", which + 'a');
 
     /* this is important. If capacity is set to anything else,
        make_request will be called and if we don't have a backing device
        bad things will happen */
     set_capacity(dev->gd, 0);
     add_disk(dev->gd);
-
     return 0;
 
 error_disk_alloc:
     blk_cleanup_queue(dev->queue);
 error_init_queue:
+    return -EBUSY;
+}
+
+static int __init drr_init( void )
+{   int error = 0, i;
+
+    drr_major = register_blkdev(drr_major, "drr");
+    if(drr_major <= 0) {
+        printk(KERN_WARNING "DRR: unable to get major number");
+        error = -EBUSY;
+        goto error_register;
+    }
+
+    for(i = 0;i < DRR_MINORS; ++i) 
+        if(drr_setup_vbd(&drr_dev[i], i) < 0)
+            goto error_init_vbd; /* TODO: fix all the partial setups to be undone */
+
+    return 0;
+
+error_init_vbd:
     unregister_blkdev(drr_major, "drr");
 error_register:
-    kfree(dev);
     return error;
-
 }
 
 static void __exit drr_exit( void )
-{
-    del_gendisk(drr_dev->gd);
-    put_disk(drr_dev->gd);
-    blk_cleanup_queue(drr_dev->queue);
+{   int i;
+    struct drr_dev_t *dev;
+
+    for(i = 0; i < DRR_MINORS; ++i) {
+        dev = &drr_dev[i];
+        del_gendisk(dev->gd);
+        put_disk(dev->gd);
+        blk_cleanup_queue(dev->queue);
+    }
     unregister_blkdev(drr_major, "drr");
-    kfree(drr_dev);
     printk("<1>Goodbye cruel world\n");
 }
 
